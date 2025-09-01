@@ -6,7 +6,7 @@ on:
       awl_ref:
         description: 'The branch, tag or SHA of awl repository'
         required: true
-        default: 'master'
+        default: 'main'
       awl_flutter_ref:
         description: 'The branch, tag or SHA of awl-flutter repository'
         required: true
@@ -25,7 +25,7 @@ jobs:
       - name: Checkout awl-flutter code
         uses: actions/checkout@v4
         with:
-          repository: 'anywherelan/awl-flutter'
+          repository: 'pftmclub/awl-flutter'
           ref: ${{ github.event.inputs.awl_flutter_ref }}
           path: 'awl-flutter'
 
