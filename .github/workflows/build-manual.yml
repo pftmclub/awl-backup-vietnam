@@ -1,0 +1,151 @@
+name: Manual build release
+
+on:
+  workflow_dispatch:
+    inputs:
+      awl_ref:
+        description: 'The branch, tag or SHA of awl repository'
+        required: true
+        default: 'master'
+      awl_flutter_ref:
+        description: 'The branch, tag or SHA of awl-flutter repository'
+        required: true
+        default: 'master'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout awl code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # also fetch tags for 'git describe'
+          ref: ${{ github.event.inputs.awl_ref }}
+          path: 'awl'
+      - name: Checkout awl-flutter code
+        uses: actions/checkout@v4
+        with:
+          repository: 'anywherelan/awl-flutter'
+          ref: ${{ github.event.inputs.awl_flutter_ref }}
+          path: 'awl-flutter'
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.24.x
+          cache: true
+          cache-dependency-path: |
+            awl/go.sum
+            awl/cmd/awl-tray/go.sum
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17.x'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.27.x'
+          channel: 'stable'
+      - run: flutter --version
+      - name: Install ndk-bundle
+        run: |
+          echo "ls $ANDROID_HOME/"
+          ls -lah $ANDROID_HOME/ || true
+          echo "ls $ANDROID_HOME/tools/bin/"
+          ls -lah $ANDROID_HOME/tools/bin/ || true
+          echo "ls $ANDROID_HOME/cmdline-tools/latest/bin/"
+          ls -lah $ANDROID_HOME/cmdline-tools/latest/bin/ || true
+          echo "install ndk-bundle"
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk-bundle"
+
+      - name: Configure Keystore for Android
+        run: |
+          echo "$KEYSTORE_UPLOAD_JKS" | base64 --decode > app/upload-keystore.jks
+          echo "storeFile=upload-keystore.jks" >> key.properties
+          echo "keyAlias=$KEYSTORE_KEY_ALIAS" >> key.properties
+          echo "storePassword=$KEYSTORE_STORE_PASSWORD" >> key.properties
+          echo "keyPassword=$KEYSTORE_KEY_PASSWORD" >> key.properties
+        env:
+          KEYSTORE_UPLOAD_JKS: ${{ secrets.KEYSTORE_UPLOAD_JKS }}
+          KEYSTORE_KEY_ALIAS: ${{ secrets.KEYSTORE_KEY_ALIAS }}
+          KEYSTORE_KEY_PASSWORD: ${{ secrets.KEYSTORE_KEY_PASSWORD }}
+          KEYSTORE_STORE_PASSWORD: ${{ secrets.KEYSTORE_STORE_PASSWORD }}
+        working-directory: awl-flutter/android
+
+      - name: Build
+        run: |
+          export ANDROID_NDK_ROOT=$ANDROID_HOME/ndk-bundle
+          unset ANDROID_NDK_HOME
+          cd awl
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go get golang.org/x/mobile/cmd/gomobile
+          gomobile init
+          go mod tidy -compat=1.24
+          cd cmd/awl-tray && go mod tidy -compat=1.24 && cd ../..
+          echo "check go mod tidy and git dirty"
+          test -z "$(git status --porcelain)" || (git status; git diff && false)
+          echo "start building"          
+          ./build.sh release
+          echo "ls build"
+          ls -lah build
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: awl-release-build
+          path: awl/build/*
+          if-no-files-found: error
+      - name: Upload flutter web artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: awl-release-static
+          path: awl/static/
+          if-no-files-found: error
+      - name: Assert number of built files
+        run: |
+          files_count="$(ls -1q awl/build/ | wc -l)"
+          echo "built $files_count files"
+          if [ "$files_count" != "17" ]; then
+               echo "::error::Files count mismatch"
+               exit 1
+          fi
+
+  build-macos:
+    runs-on: macos-latest
+    needs: [ build ]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout awl code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # also fetch tags for 'git describe'
+          ref: ${{ github.event.inputs.awl_ref }}
+          path: 'awl'
+      - name: Retrieve saved static/ build
+        uses: actions/download-artifact@v4
+        with:
+          name: awl-release-static
+          path: awl/static
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.24.x
+          cache: true
+          cache-dependency-path: |
+            awl/go.sum
+            awl/cmd/awl-tray/go.sum
+
+      - name: Build
+        run: |
+          cd awl
+          mkdir build
+          ./build.sh release-macos
+          echo "ls build"
+          ls -lah build
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: awl-release-build-macos
+          path: awl/build/*
+          if-no-files-found: error
